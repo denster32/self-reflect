@@ -706,6 +706,13 @@ def patch_target_for(finding):
                 f"from \"port 8800 not accepting connections at all.\" `curl: (7) Failed to connect` "
                 f"means the process is gone or never started; `loaded:false` for >90s means the model "
                 f"is stuck loading. Different remediation paths.")
+    if det == "service_unreachable" and finding.get("target", "").endswith(":4000"):
+        return ("orchestrator/AGENTS.md", "Common pitfalls (for agents)",
+                f"- **Dashboard polls orchestrator HTTP API at :4000 every ~1s.** ECONNREFUSED on "
+                f"`:4000` means the orchestrator process is dead, restarting, or the HTTP API port "
+                f"is unreachable. The dashboard's `dashboard /api/dashboard 500 — keeping last good "
+                f"state` warns are a *symptom* of this fault, not the cause. Cross-reference "
+                f"`orchestrator.pid` and the watchdog logs together.")
     if det == "long_idle":
         return ("orchestrator/AGENTS.md", "Common pitfalls (for agents)",
                 f"- **TTS `loaded:false` for >2 minutes is a fault, not a warmup.** "
@@ -738,34 +745,50 @@ def patch_target_for(finding):
 
 
 def write_patches(output_dir, findings):
+    """Write one patch file per target file. Group findings by `path`
+    first (one file per target), then nest each unique section within
+    that file. Within a section, identical recommendation texts are
+    deduplicated; their underlying findings are summarized into one
+    consolidated block.
+    """
     patches_dir = os.path.join(output_dir, "patches")
     os.makedirs(patches_dir, exist_ok=True)
-    written = []
-    seen = set()
+    # path → OrderedDict[section_or_empty → OrderedDict[text → list[finding]]]
+    by_path = collections.OrderedDict()
     for f in findings:
         target = patch_target_for(f)
         if not target or not target[0]:
             continue
         path, section, text = target
-        # Dedupe by (target_path, section, text-hash) — multiple findings of
-        # the same detector with identical recommendations collapse to one.
-        key = (path, section, hash(text))
-        if key in seen:
-            continue
-        seen.add(key)
+        by_path.setdefault(path, collections.OrderedDict()) \
+                .setdefault(section or "", collections.OrderedDict()) \
+                .setdefault(text, []).append(f)
+    written = []
+    for path, sections in by_path.items():
         safe = re.sub(r"[^a-zA-Z0-9._-]", "_", path)
         out_path = os.path.join(patches_dir, f"{safe}.md")
-        with open(out_path, "a") as fh:
-            if os.path.getsize(out_path) == 0:
-                fh.write(f"# Suggested patches for `{path}`\n\n")
-            fh.write(f"## Finding: `{f.get('detector')}` — "
-                     f"{f.get('occurrences', 1)} occurrences, "
-                     f"{f.get('first_seen', '?')} → {f.get('last_seen', '?')}\n\n")
-            if section:
-                fh.write(f"Append under `## {section}`:\n\n")
-            else:
-                fh.write(f"Add at an appropriate location:\n\n")
-            fh.write(text + "\n\n---\n\n")
+        with open(out_path, "w") as fh:
+            fh.write(f"# Suggested patches for `{path}`\n\n")
+            for section, text_groups in sections.items():
+                if section:
+                    fh.write(f"## {section}\n\n")
+                    fh.write(f"Append under `## {section}` in the target file:\n\n")
+                else:
+                    fh.write(f"## (no section)\n\n")
+                    fh.write(f"Add at an appropriate location:\n\n")
+                for text, flist in text_groups.items():
+                    detectors = sorted({f.get('detector','?') for f in flist})
+                    total_occ = sum(f.get('occurrences', 0) for f in flist)
+                    first_seen = min((f.get('first_seen','') for f in flist), default='?')
+                    last_seen = max((f.get('last_seen','') for f in flist), default='?')
+                    fh.write(f"### Recommendation (from {len(flist)} "
+                             f"{', '.join(detectors)} finding"
+                             f"{'s' if len(flist) != 1 else ''}, "
+                             f"{total_occ} total occurrences)\n\n")
+                    fh.write(f"_First seen:_ `{first_seen}` &nbsp; "
+                             f"_Last seen:_ `{last_seen}`\n\n")
+                    fh.write(text + "\n\n")
+                fh.write("---\n\n")
         written.append(out_path)
     return written
 

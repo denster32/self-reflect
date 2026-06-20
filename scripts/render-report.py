@@ -127,6 +127,7 @@ def main():
         "repeated_message", "escalating_health", "restart_loop",
         "service_unreachable", "http_error_storm", "muxer_failure",
         "long_idle", "json_parse_failure", "chaos_verdict", "browser_console_errors",
+        "segment_gap",
     ]:
         cnt = summary.get("detector_counts", {}).get(det_name, 0)
         over = "yes" if cnt > 50 else ""
